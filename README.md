@@ -116,6 +116,3 @@ This project is licensed under the **MIT License** – see the `LICENSE` file fo
 
 This tool is intended for **educational and research purposes only**. The author does not condone any misuse and is not responsible for any damage caused by using this software. Always ensure you have permission before interacting with any device.
 
-git clone https://github.com/07iamravi/max-Droid.git
-cd max-Droid
-python3 maxdroid.py
