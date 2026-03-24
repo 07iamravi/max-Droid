@@ -42,8 +42,6 @@ cd max-Droid
 python3 maxdroid.py
 ```
 
-Here is the content of your documentation formatted in clean, consistent Markdown:
-
 # MaxDroid Documentation
 
 On first run, the script will check for **ADB**. If missing, it will offer to download it automatically (recommended). All files are stored in `~/.maxdroid/`.
