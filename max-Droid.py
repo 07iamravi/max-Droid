@@ -4,6 +4,7 @@ max-Droid – Android Management Framework
 Author: 07iamravi (Rabi Kishan Rauniyar)
 Description: **max-Droid** is a feature‑rich Android management framework that wraps ADB into a sleek, interactive terminal interface.  
 It automates device connection, provides comprehensive device, app, file, system, screen, and Wi‑Fi management, and includes automatic ADB installation and wireless reconnection.
+Enhanced with Termux support.
 """
 
 import subprocess
@@ -29,7 +30,7 @@ import socket
 init(autoreset=True)
 
 # ----------------------------------------------------------------------
-# Color definitions (matching x‑zone style)
+# Color definitions
 # ----------------------------------------------------------------------
 RED = Fore.RED
 GREEN = Fore.GREEN
@@ -68,6 +69,22 @@ DEVICE_DB = Path.home() / ".maxdroid_devices.json"
 DEVICE_NAMES = {}
 EVENT_QUEUE = Queue()
 RUN_WATCHER = True
+
+# ----------------------------------------------------------------------
+# Termux Detection
+# ----------------------------------------------------------------------
+def is_termux():
+    """Check if running inside Termux environment."""
+    if "TERMUX_VERSION" in os.environ:
+        return True
+    if os.path.exists("/data/data/com.termux/files/usr"):
+        return True
+    prefix = os.environ.get("PREFIX", "")
+    if prefix and "/com.termux" in prefix:
+        return True
+    return False
+
+IN_TERMUX = is_termux()
 
 # ===================== DEVICE DB =====================
 def load_devices_db():
@@ -114,6 +131,9 @@ def wait_for_device_status(serial, expected_status='device', timeout=5):
 
 def auto_reconnect_saved():
     """Attempt to reconnect saved wireless devices. Returns list of successfully reconnected serials."""
+    if IN_TERMUX:
+        # In Termux, we don't automatically reconnect wireless devices
+        return []
     print(f"{CYAN}Checking saved devices...{RESET}")
     reconnected = []
     for serial in DEVICE_NAMES.keys():
@@ -157,6 +177,8 @@ def dashboard():
         print(f"{YELLOW}{name}{RESET} → {serial} ({status})")
         if ip:
             print(f"   IP: {ip}")
+    if IN_TERMUX:
+        print(f"{YELLOW}Running in Termux – local device only.{RESET}")
     print("\nEvents:")
     while not EVENT_QUEUE.empty():
         print(EVENT_QUEUE.get())
@@ -211,6 +233,8 @@ def print_banner():
     print(f"{YELLOW}Authorized use only. Misuse may violate laws and regulations.")
     print(f"{MAGENTA}>> Stay ethical, stay curious <<{RESET}")
     print(f"{CYAN}{'='*60}{RESET}\n")
+    if IN_TERMUX:
+        print(f"{YELLOW}Running in Termux environment – some features may be limited.{RESET}\n")
 
 def banner_small():
     small = pyfiglet.figlet_format("max-Droid", font="small")
@@ -230,14 +254,19 @@ def run_adb_command(cmd, device=None):
     except subprocess.CalledProcessError as e:
         return f"{RED}Error: {e.stderr.strip()}{RESET}"
     except FileNotFoundError:
-        return f"{RED}ADB not found at {ADB_PATH}. Please check your installation.{RESET}"
+        return f"{RED}Error: ADB not found at {ADB_PATH}{RESET}"
+    except Exception as e:
+        return f"{RED}Error: {str(e)}{RESET}"
 
 def list_devices():
-    """Returns a list of tuples (serial, status) from 'adb devices'."""
+    """Returns a list of tuples (serial, status) from 'adb devices', ignoring error lines."""
     out = run_adb_command("devices")
     devices = []
     for line in out.splitlines():
-        if line and not line.startswith("List of devices attached"):
+        # Skip lines that contain error messages or are empty
+        if not line or "error" in line.lower():
+            continue
+        if not line.startswith("List of devices attached"):
             parts = line.split()
             if len(parts) >= 2:
                 serial, status = parts[0], parts[1]
@@ -249,6 +278,7 @@ def device_list():
     if not devices:
         print(f"{YELLOW}No devices attached.{RESET}")
         return
+    print(f"{GREEN}Connected devices:{RESET}")
     for serial, status in devices:
         name = get_device_name(serial)
         label = f"{name} ({serial})" if name != "Unknown" else serial
@@ -309,7 +339,7 @@ def wait_for_adb():
     run_adb_command("start-server")
 
 # ----------------------------------------------------------------------
-# ADB Installation & Auto‑Setup
+# ADB Installation & Auto‑Setup (Termux-aware)
 # ----------------------------------------------------------------------
 def is_adb_available():
     adb_path = shutil.which("adb")
@@ -327,7 +357,20 @@ def is_adb_available():
             return str(path)
     return None
 
+def install_adb_termux():
+    """Attempt to install ADB via Termux package manager."""
+    print(f"{CYAN}Installing android-tools via pkg...{RESET}")
+    try:
+        subprocess.run(["pkg", "install", "android-tools", "-y"], check=True)
+        print(f"{GREEN}ADB installed successfully via pkg.{RESET}")
+        return shutil.which("adb")
+    except subprocess.CalledProcessError:
+        print(f"{RED}Failed to install android-tools via pkg.{RESET}")
+        return None
+
 def download_and_extract_platform_tools():
+    if IN_TERMUX:
+        return None
     system = platform.system().lower()
     if system == "windows":
         url = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
@@ -379,8 +422,23 @@ def ensure_adb():
     adb = is_adb_available()
     if adb:
         ADB_PATH = adb
-        # Silent – no print
-        return True
+        # Test ADB with a simple command to ensure it's functional
+        try:
+            subprocess.run([ADB_PATH, "version"], capture_output=True, check=True)
+            return True
+        except:
+            print(f"{YELLOW}ADB found but not working. Attempting to reinstall.{RESET}")
+            # Fall through to installation
+
+    if IN_TERMUX:
+        print(f"{YELLOW}ADB not found or not working. Attempting to install via pkg...{RESET}")
+        adb_path = install_adb_termux()
+        if adb_path:
+            ADB_PATH = adb_path
+            return True
+        else:
+            print(f"{RED}Failed to install ADB. Please install 'android-tools' manually using: pkg install android-tools{RESET}")
+            return False
 
     print(f"{YELLOW}\nADB is not installed or not in PATH.{RESET}")
     print("Without ADB, max-Droid cannot communicate with your device.")
@@ -410,6 +468,10 @@ def ensure_adb():
 def show_adb_installation_help():
     system = platform.system().lower()
     print(f"{YELLOW}\n=== Manual ADB Installation ==={RESET}")
+    if IN_TERMUX:
+        print("In Termux, install android-tools using:")
+        print("  pkg install android-tools")
+        return
     if system == "windows":
         print("1. Download the Android SDK Platform-Tools from:")
         print("   https://developer.android.com/studio/releases/platform-tools")
@@ -433,7 +495,7 @@ def show_adb_installation_help():
     print("\nAfter installing, run this script again.")
 
 # ----------------------------------------------------------------------
-# scrcpy Installation Check & Auto‑Setup
+# scrcpy Installation Check & Auto‑Setup (Termux-aware)
 # ----------------------------------------------------------------------
 def is_scrcpy_available():
     scrcpy_path = shutil.which("scrcpy")
@@ -449,6 +511,9 @@ def is_scrcpy_available():
     return None, None
 
 def download_and_setup_scrcpy():
+    if IN_TERMUX:
+        print(f"{YELLOW}scrcpy not supported in Termux environment.{RESET}")
+        return None, None
     system = platform.system().lower()
     if system == "windows":
         url = "https://github.com/Genymobile/scrcpy/releases/download/v2.7/scrcpy-win64-v2.7.zip"
@@ -506,11 +571,13 @@ def download_and_setup_scrcpy():
 
 def ensure_scrcpy():
     global SCRCPY_PATH, SCRCPY_DIR
+    if IN_TERMUX:
+        print(f"{YELLOW}scrcpy is not supported in Termux environment. Screen sharing features will be unavailable.{RESET}")
+        return False
     scrcpy_path, scrcpy_dir = is_scrcpy_available()
     if scrcpy_path:
         SCRCPY_PATH = scrcpy_path
         SCRCPY_DIR = scrcpy_dir
-        # Silent – no print
         return True
 
     print(f"{YELLOW}\nscrcpy is not installed or not in PATH.{RESET}")
@@ -542,6 +609,9 @@ def ensure_scrcpy():
 def show_scrcpy_installation_help():
     system = platform.system().lower()
     print(f"{YELLOW}\n=== Manual scrcpy Installation ==={RESET}")
+    if IN_TERMUX:
+        print("scrcpy is not supported in Termux. You may need a graphical environment and X11 forwarding.")
+        return
     print("scrcpy is available at: https://github.com/Genymobile/scrcpy")
     if system == "windows":
         print("1. Download the latest Windows release from the GitHub page.")
@@ -562,7 +632,7 @@ def show_scrcpy_installation_help():
     print("\nAfter installing, restart the script to use screen sharing.")
 
 # ----------------------------------------------------------------------
-# Connection & Auto TCP/IP (silent mode)
+# Connection & Auto TCP/IP (Termux-aware)
 # ----------------------------------------------------------------------
 def wait_for_authorized_device(timeout=60):
     start = time.time()
@@ -582,6 +652,9 @@ def wait_for_authorized_device(timeout=60):
     return None
 
 def auto_tcpip(usb_device=None):
+    if IN_TERMUX:
+        print(f"{YELLOW}Auto TCP/IP is not applicable in Termux. Use manual wireless connection.{RESET}")
+        return None
     if not usb_device:
         devices = list_devices()
         for serial, status in devices:
@@ -635,6 +708,7 @@ def connect_device_interactive():
                 sys.exit(1)
         return select_device()
 
+    # No device found – present connection options
     print(f"{YELLOW}\nNo Android device detected.{RESET}")
     print("How would you like to connect?")
     print("1. Connect via USB cable (recommended for first time)")
@@ -643,11 +717,18 @@ def connect_device_interactive():
     choice = input(f"{CYAN}Choose option: {RESET}").strip()
 
     if choice == "1":
-        print(f"{CYAN}\n=== USB Connection Guide ==={RESET}")
-        print("1. Enable Developer options (tap Build number 7 times).")
-        print("2. Enable USB debugging in Developer options.")
-        print("3. Connect your device via USB.")
-        print("4. Accept the RSA fingerprint when prompted.\n")
+        if IN_TERMUX:
+            print(f"{CYAN}\n=== USB Connection Guide (Termux) ==={RESET}")
+            print("1. Enable Developer options (tap Build number 7 times).")
+            print("2. Enable USB debugging in Developer options.")
+            print("3. Connect your device via USB.")
+            print("4. Accept the RSA fingerprint when prompted.\n")
+        else:
+            print(f"{CYAN}\n=== USB Connection Guide ==={RESET}")
+            print("1. Enable Developer options (tap Build number 7 times).")
+            print("2. Enable USB debugging in Developer options.")
+            print("3. Connect your device via USB.")
+            print("4. Accept the RSA fingerprint when prompted.\n")
         input("After completing these steps, press Enter to continue...")
 
         print(f"{CYAN}Looking for a device...{RESET}")
@@ -672,7 +753,7 @@ def connect_device_interactive():
             print(f"{RED}Authorization timeout.{RESET}")
             return None
 
-        if AUTO_TCPIP:
+        if AUTO_TCPIP and not IN_TERMUX:
             print(f"{CYAN}Switching to wireless mode...{RESET}")
             wireless = auto_tcpip(usb_device=auth_serial)
             if wireless:
@@ -724,6 +805,8 @@ def device_connect_wifi():
         port = int(port)
     out = run_adb_command(f"connect {ip}:{port}")
     print(out)
+    if IN_TERMUX:
+        print(f"{YELLOW}Note: In Termux, wireless connection may be used for devices on the same network.{RESET}")
 
 def device_restart_adb():
     run_adb_command("kill-server")
@@ -985,13 +1068,15 @@ def sys_monitor_performance(device):
         print("\nMonitoring stopped.")
 
 # ----------------------------------------------------------------------
-# Screen Sharing & Recording (with audio option)
+# Screen Sharing & Recording (Termux-aware)
 # ----------------------------------------------------------------------
 def launch_scrcpy(device, extra_args=None):
+    if IN_TERMUX:
+        print(f"{YELLOW}scrcpy is not supported in Termux. Screen sharing unavailable.{RESET}")
+        return False
     if not ensure_scrcpy():
         return False
 
-    
     try:
         test_cmd = [SCRCPY_PATH, "--version"]
         subprocess.run(test_cmd, capture_output=True, check=True, timeout=5)
@@ -1010,7 +1095,6 @@ def launch_scrcpy(device, extra_args=None):
     cwd = SCRCPY_DIR if SCRCPY_DIR else None
 
     try:
-        # Launch with output suppressed to keep the terminal clean
         subprocess.Popen(cmd, env=env, cwd=cwd,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print(f"{GREEN}Starting screen sharing...{RESET}")
@@ -1020,6 +1104,9 @@ def launch_scrcpy(device, extra_args=None):
         return False
 
 def screen_start(device):
+    if IN_TERMUX:
+        print(f"{YELLOW}Screen sharing not supported in Termux.{RESET}")
+        return
     print(f"{CYAN}Audio options:{RESET}")
     print("1. Screen only (no audio)")
     print("2. Screen with device audio (Android 11+)")
@@ -1053,15 +1140,16 @@ def screen_start(device):
         print("No audio will be captured.")
 
     if launch_scrcpy(device, extra_args):
-        
         pass
     else:
         print(f"{RED}Failed to launch scrcpy.{RESET}")
 
 def screen_custom(device):
+    if IN_TERMUX:
+        print(f"{YELLOW}Screen sharing not supported in Termux.{RESET}")
+        return
     extra_args = input(f"{CYAN}Extra scrcpy arguments: {RESET}").strip()
     if launch_scrcpy(device, extra_args):
-        # Silent
         pass
     else:
         print(f"{RED}Failed to launch scrcpy.{RESET}")
@@ -1080,6 +1168,9 @@ def screen_show_active_sessions(device):
             print(line)
 
 def screen_multi_device():
+    if IN_TERMUX:
+        print(f"{YELLOW}Multi-device sharing not supported in Termux.{RESET}")
+        return
     if not ensure_scrcpy():
         return
     devices = list_devices()
@@ -1089,8 +1180,10 @@ def screen_multi_device():
             launch_scrcpy(serial)
 
 def screen_check_scrcpy():
+    if IN_TERMUX:
+        print(f"{YELLOW}scrcpy not supported in Termux.{RESET}")
+        return
     if ensure_scrcpy():
-        # Now print the path since it's explicitly requested
         print(f"{GREEN}scrcpy is installed at: {SCRCPY_PATH}{RESET}")
     else:
         print(f"{RED}scrcpy is not installed or not working.{RESET}")
@@ -1118,7 +1211,7 @@ def screen_sync_folder(device):
         print(out)
 
 # ----------------------------------------------------------------------
-# WiFi Management
+# WiFi Management (Termux-aware)
 # ----------------------------------------------------------------------
 def wifi_manual_transfer():
     ip = input(f"{CYAN}Enter device IP: {RESET}").strip()
@@ -1129,8 +1222,13 @@ def wifi_manual_transfer():
         port = int(port)
     out = run_adb_command(f"connect {ip}:{port}")
     print(out)
+    if IN_TERMUX:
+        print(f"{YELLOW}Note: In Termux, wireless connection may be used for devices on the same network.{RESET}")
 
 def wifi_transfer_all():
+    if IN_TERMUX:
+        print(f"{YELLOW}Transfer all devices not supported in Termux. Use manual connection.{RESET}")
+        return
     devices = list_devices()
     for serial, status in devices:
         if status == "device" and ":" in serial:
@@ -1146,6 +1244,9 @@ def wifi_transfer_all():
                 print(f"{RED}Could not get IP for {serial}{RESET}")
 
 def wifi_quick_setup():
+    if IN_TERMUX:
+        print(f"{YELLOW}Quick WiFi setup not supported in Termux. Use manual connection.{RESET}")
+        return
     auto_tcpip()
 
 def wifi_status():
@@ -1168,6 +1269,9 @@ def wifi_disconnect():
 
 def wifi_toggle_auto():
     global AUTO_TCPIP
+    if IN_TERMUX:
+        print(f"{YELLOW}Auto TCP/IP not applicable in Termux.{RESET}")
+        return
     AUTO_TCPIP = not AUTO_TCPIP
     save_config()
     print(f"{GREEN}Auto TCP/IP is now {'ON' if AUTO_TCPIP else 'OFF'}{RESET}")
@@ -1196,6 +1300,9 @@ def wifi_service_status():
 
 def wifi_settings():
     global AUTO_TCPIP, TCPIP_PORT
+    if IN_TERMUX:
+        print(f"{YELLOW}Settings not applicable in Termux (no wireless mode).{RESET}")
+        return
     print(f"{YELLOW}=== Settings ==={RESET}")
     print(f"1. Auto TCP/IP: {'ON' if AUTO_TCPIP else 'OFF'}")
     print(f"2. TCP/IP Port: {TCPIP_PORT}")
@@ -1219,10 +1326,13 @@ def wifi_settings():
         print(f"{RED}Invalid choice.{RESET}")
 
 # ----------------------------------------------------------------------
-# Network scan for ADB devices on port 5555
+# Network scan for ADB devices on port 5555 (Termux-aware)
 # ----------------------------------------------------------------------
 def scan_network_for_adb():
     """Scan local network for devices with ADB listening on port 5555."""
+    if IN_TERMUX:
+        print(f"{YELLOW}Network scan not recommended in Termux (no wireless mode).{RESET}")
+        return []
     print(f"{CYAN}Scanning local network for ADB devices on port {TCPIP_PORT}...{RESET}")
 
     # Get local IP and subnet
