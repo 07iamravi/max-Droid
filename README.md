@@ -1,7 +1,7 @@
 # max-Droid – Android Management Framework
 
 ![Python Version](https://img.shields.io/badge/python-3.6+-blue.svg)
-![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)
+![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos%20%7C%20termux-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 **max-Droid** is a feature‑rich Android management framework that wraps ADB into a sleek, interactive terminal interface.  
